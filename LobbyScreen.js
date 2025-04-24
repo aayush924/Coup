@@ -1,62 +1,84 @@
+// LobbyScreen.js
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity } from 'react-native';
-import { collection, addDoc, doc, getDoc, setDoc, updateDoc, onSnapshot } from 'firebase/firestore';
+import {
+  collection,
+  addDoc,
+  doc,
+  getDocs,
+  setDoc,
+  updateDoc,
+  onSnapshot,
+} from 'firebase/firestore';
 import { db } from './firebase';
-import { getRandomInfluence } from './utils/gameUtils'; // Importing the utility function
+import { getRandomInfluence } from './utils/gameUtils';
 
 const LobbyScreen = ({ route, navigation }) => {
   const { roomCode, playerName, isHost } = route.params;
   const [players, setPlayers] = useState([]);
+  const [gameStarted, setGameStarted] = useState(false);
 
   useEffect(() => {
-    // Listen to real-time updates for the players in this room
-    const roomRef = collection(db, 'rooms', roomCode, 'players');
-    const unsubscribe = onSnapshot(roomRef, (snapshot) => {
+    const roomRef = doc(db, 'rooms', roomCode);
+    
+    // Listen for players joining (from the subcollection)
+    const playersRef = collection(db, 'rooms', roomCode, 'players');
+    const unsubscribePlayers = onSnapshot(playersRef, (snapshot) => {
       const updatedPlayers = snapshot.docs.map((doc) => doc.data());
       setPlayers(updatedPlayers);
     });
+    
+    // Listen for gameStarted state changes in the room document
+    const unsubscribeGame = onSnapshot(roomRef, (docSnapshot) => {
+      if (docSnapshot.exists()) {
+        const data = docSnapshot.data();
+        setGameStarted(data.gameStarted);
+        if (data.gameStarted) {
+          navigation.navigate('Game', { roomCode, playerName });
+        }
+      }
+    });
 
-    // Add the current player to the room
+    // Add the current player to the players subcollection.
+    // (You might wish to add logic so that a player isn’t added twice.)
     const addPlayer = async () => {
       try {
-        await addDoc(roomRef, { name: playerName });
+        await addDoc(playersRef, { name: playerName });
       } catch (error) {
         console.error('Error adding player:', error);
       }
     };
     addPlayer();
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribePlayers();
+      unsubscribeGame();
+    };
   }, []);
 
+  // When the host starts the game, fetch all players from the subcollection,
+  // assign each one starting influence and coins, and write them into the room doc.
   const startGame = async () => {
     try {
-      const roomRef = doc(db, 'rooms', roomCode); // Reference to the room document
-
-      // Fetch the room document to check if it exists
-      const roomDoc = await getDoc(roomRef);
-
-      if (!roomDoc.exists()) {
-        // If room doesn't exist, create it
-        const initialPlayers = players.map((player) => ({
-          name: player.name,
-          influence: getRandomInfluence(), // Assign random influence to each player
-          coins: 2, // Starting coins for each player
-        }));
-
-        await setDoc(roomRef, {
-          players: initialPlayers, // Set the players with their influence and coins
-          currentTurn: players[0].name, // First player starts
-          lastAction: null,
-          gameStarted: true,
-        });
-      } else {
-        // If room exists, just update it to indicate the game started
-        await updateDoc(roomRef, { gameStarted: true });
-      }
-
-      // Navigate to the game screen
-      navigation.navigate('Game', { roomCode, playerName: players[0].name });
+      const roomRef = doc(db, 'rooms', roomCode);
+      const playersRef = collection(db, 'rooms', roomCode, 'players');
+      // Get all players from the players subcollection.
+      const playersSnapshot = await getDocs(playersRef);
+      const playersList = playersSnapshot.docs.map((doc) => doc.data());
+      // For every player, assign starting influence and coins.
+      const initialPlayers = playersList.map((player) => ({
+        name: player.name,
+        influence: getRandomInfluence(), // e.g. returns 2 random cards
+        coins: 2,
+        revealed: [],
+      }));
+      // Create (or override) the room document with complete player data.
+      await setDoc(roomRef, {
+        players: initialPlayers,
+        currentTurn: initialPlayers[0].name,
+        lastAction: null,
+        gameStarted: true,
+      });
     } catch (error) {
       console.error('Error starting game:', error);
     }
@@ -74,8 +96,14 @@ const LobbyScreen = ({ route, navigation }) => {
         )}
       />
       {isHost && (
-        <TouchableOpacity style={styles.button} onPress={startGame}>
-          <Text style={styles.buttonText}>Start Game</Text>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={startGame}
+          disabled={gameStarted}
+        >
+          <Text style={styles.buttonText}>
+            {gameStarted ? 'Game Started' : 'Start Game'}
+          </Text>
         </TouchableOpacity>
       )}
     </View>
